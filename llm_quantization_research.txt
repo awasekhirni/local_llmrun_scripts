@@ -49,5 +49,12 @@ a. AWQ (Activation-aware Weight Quantization) which uses block-wise quantization
 b. QUIP and AQLM (Additive Quantization for LLMs) which uses residual quantization where they quantize the weight, calculate the residual, and quantize the residual, repeating the process to achieve extreme compressions (2-bit to 3-bit) with minimal accuracy loss. 
 c. GTPQ uses a scale and zero-point per block approach which is mathematically identical to the centroid + residual approach but framed differently.
 
+
 Over the next two years, i strongly believe that we should focus on rewriting the CUDA kernels to accomodate to the above mentioned strategies to shrink these LLMs to fit into Desktop computation ecosystems.
+
+
+Update 
+1. NVIDIA's Ampere/Hopper Architecture processes memory in chunks of standard memory transaction which is often 128 bytes. So, the ideal optimization can only be achieved at 128. Moving from 128 to 512 only improves the compression ratio from 7.5x to 7.8x which is fractional change. A gain of 3% improvement in memory will result in massive penalty in model accuracy. It is not a worthwhile trade-off. Thus, increasing the block size from 128 to 512 has diminishing returns.
+
+
 
