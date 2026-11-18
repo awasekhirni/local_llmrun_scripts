@@ -1,3 +1,53 @@
 2025-26 Copyright Beta ORI Inc. Canada. All Rights Reserved.
 
 Syed, Awase Khirni 
+
+AI's "GIANT BOOK" Problem
+
+Imagine an AI's "brain" is a giant book filled with millions of numbers which are called weights.
+This book is so huge it doesn't fit in the compueter's short-term memory. Yes, The RAM. 
+We want to shrink the book so it fits, without making it dumb. 
+
+Yes, we thought of the approach of replacing long numbers with short secret codes, with a lookup reference table like turning 0.15384616 into A7b2!
+Everytime it needs to do math, it has to open a dicitonary and translate A7b2! back into a number. This results in more computation, as it takes more time 
+translating instead of thinking. 
+
+How can we shrink the giant book of numbers so it fits in memory, without forcing the computer to do slow, heavy translation work every time it needs to read a number?
+
+My next logical approach was to look at Residual Quantization or Mean-Centered Block Quantization. Mathematically, it sounds good, but to make it feasible on a GPU.
+There are three critical architectural bottlenecks : a. the memory math trap  b. the compute expansion and c. the block size overhead. 
+
+If we store the centroid in FP32(4bytes) and the 8 differences (residuals) in FP32 (4 bytes each). the group of 8 weights takes `36 bytes` instead of original 32 bytes resulting in increased memory usage. Hence the memory math is trap to be ruled out for ever. Alternatively reconstruction of the weights in memory before computation is an overhead on GPU's memory bandwidth. In addition to this, there is considerable effort in rewriting the kernel for CUDA or NVIDIA. I also realized that if i we write this as three separate PyTorch operations, the kernel launch overhead and memory reads/writes will make it 
+10x slower than standard FP32. It must be written as a single, fused custom CUDA or Triton kernel. 
+
+Following this line of thought. I revised my strategy to increase the block size from 8 to 64 and then 128. the 2-byte centroid is amortized over 128 weights. the residuals dominate the memory layout, allowing for highly aligned, contiguous memory reads (vectorized loads) which GPUs require for maximum throughput. when calculating the centroid, we use the exact mean of the block. This centers the residuals perfectly around zero. Symmetric residuals which range from -max to +max are ideal for symmetric INT8 quantization. It eliminate the need to store a separate "zero-point" or "offset" for the residuals, saving even more memory. 
+If we write a custom kernal (using NVIDIA Triton or CUDA) that executes the $Y= XC (constant) + XR$ (residuals) math in the GPU's shared memory or register, without writing intermediate results to a global VRAM. That could potentially make way for some reduction. Given below is a sample pseudo-code logic for the fused kernel.
+
+**Pseudo-code logic for the fused kernel:**
+```python
+# Conceptual Triton/CUDA logic
+for each block of 128 weights:
+    # 1. Load the FP16 centroid and INT8 residuals into fast SRAM
+    C = load_fp16(centroid_pointer)
+    R = load_int4(residual_pointer) 
+    
+    # 2. Dequantize residuals to FP16 on the fly in registers
+    R_fp16 = dequantize(R) 
+    
+    # 3. Reconstruct weights in registers (NO global memory write)
+    W_fp16 = C + R_fp16 
+    
+    # 4. Perform the dot product with the activation matrix X
+    Y_block = dot_product(X_block, W_fp16)
+    
+    # 5. Accumulate to the final output
+    Y += Y_block
+```
+This strategy may be feasible only if the residuals are quantized to INT8 for a group size increased to 128 to amortize overhead. Hold on, if it works for 128 why not for 256 or 512. It worth looking 
+at experimenting the outcome. Would this approach present a highly optimized, fused custom kernel. I am afraid that implementing using standard PyTorch operations without using custom kernels, the compute overhead will negate the memory savings.  The literature speaks of 3 cutting-edge LLM compression frameworks namely 
+a. AWQ (Activation-aware Weight Quantization) which uses block-wise quantization with scaling factors very similar to the centroid concept. 
+b. QUIP and AQLM (Additive Quantization for LLMs) which uses residual quantization where they quantize the weight, calculate the residual, and quantize the residual, repeating the process to achieve extreme compressions (2-bit to 3-bit) with minimal accuracy loss. 
+c. GTPQ uses a scale and zero-point per block approach which is mathematically identical to the centroid + residual approach but framed differently.
+
+Over the next two years, i strongly believe that we should focus on rewriting the CUDA kernels to accomodate to the above mentioned strategies to shrink these LLMs to fit into Desktop computation ecosystems.
+
